@@ -1,0 +1,207 @@
+#!/usr/bin/python3
+#+
+# Example use of pysmb2. This one is based on the smb2-raw-stat-async.c
+# example in the libsmb2 source tree, using my CmdSequence convenience
+# wrapper for sequences of PDU calls.
+#
+# Copyright 2020 by Lawrence D'Oliveiro <ldo@geek-central.gen.nz>. This
+# script is licensed CC0
+# <https://creativecommons.org/publicdomain/zero/1.0/>; do with it
+# what you will.
+#-
+
+import sys
+import os
+import time
+import asyncio
+import getopt
+import smb2
+from smb2 import \
+    SMB2
+
+opts, args = getopt.getopt \
+  (
+    sys.argv[1:],
+    "",
+    []
+  )
+if len(args) != 1 :
+    raise getopt.GetoptError("need exactly one arg, the URL of the file to stat")
+#end if
+
+loop = asyncio.get_event_loop()
+
+async def mainline() :
+    ctx = smb2.Context.create() \
+        .set_security_mode(SMB2.NEGOTIATE_SIGNING_ENABLED) \
+        .attach_asyncio(loop)
+    url = ctx.parse_url(args[0])
+    await ctx.connect_share_async(url.server, url.share, url.user)
+    if url.path != None :
+        path = url.path.encode()
+    else :
+        path = None
+    #end if
+    seq = \
+        (ctx.new_cmd_seq()
+            .cmd_create_async
+              (
+                "create",
+                SMB2.create_request
+                  (
+                    requested_oplock_level = SMB2.OPLOCK_LEVEL_NONE,
+                    impersonation_level = SMB2.IMPERSONATION_IMPERSONATION,
+                    desired_access = SMB2.FILE_READ_ATTRIBUTES | SMB2.FILE_READ_EA,
+                    file_attributes = 0,
+                    share_access = SMB2.FILE_SHARE_READ | SMB2.FILE_SHARE_WRITE,
+                    create_disposition = SMB2.FILE_OPEN,
+                    create_options = 0,
+                    name = path,
+                  )
+              )
+            .cmd_query_info_async
+              (
+                "info",
+                SMB2.query_info_request
+                  (
+                    info_type = SMB2.s0_INFO_FILE,
+                    file_info_class = SMB2.FILE_ALL_INFORMATION,
+                    output_buffer_length = 65535,
+                    additional_information = 0,
+                    flags = 0,
+                    file_id = smb2.compound_file_id,
+                  )
+              )
+            .cmd_close_async
+              (
+                "close",
+                SMB2.close_request
+                  (
+                    flags = SMB2.CLOSE_FLAG_POSTQUERY_ATTRIB,
+                    file_id = smb2.compound_file_id,
+                  )
+              )
+            .queue()
+        )
+    reply = await seq["info"]
+    info = smb2.FileAllInfo.from_ct_ptr(ctx, smb2.ct.cast(reply, smb2.ct.POINTER(SMB2.file_all_info)))
+    fmt_time = lambda t : time.strftime("%Y-%b-%d %H:%M:%S", time.localtime(t.tv_sec))
+    fmt_bool = lambda b : ("N", "Y")[b]
+    sys.stdout.write \
+      (
+            "attrs: %(attrs)s\n"
+            "ctime: %(ctime)s.%(ctime_µs)0.6d\n"
+            "atime: %(atime)s.%(atime_µs)0.6d\n"
+            "mtime: %(mtime)s.%(mtime_µs)0.6d\n"
+            "wtime: %(wtime)s.%(wtime_µs)0.6d\n"
+            "asize: %(allocsize)d\n"
+            "eofsz: %(eofsize)d\n"
+            "delet: %(delet)s\n"
+            "dir:   %(dir)s\n"
+            "easiz: %(easize)d\n"
+            "acces: %(access)s\n"
+            "bytof: %(byteoffset)d\n"
+            "mode:  %(mode)s\n"
+            "align: %(align)d\n"
+        %
+            {
+                "attrs" :
+                    ", ".join
+                      (
+                        attrbit[1]
+                        for attrbit in
+                            (
+                                (SMB2.FILE_ATTRIBUTE_READONLY, "READONLY"),
+                                (SMB2.FILE_ATTRIBUTE_HIDDEN, "HIDDEN"),
+                                (SMB2.FILE_ATTRIBUTE_SYSTEM, "SYSTEM"),
+                                (SMB2.FILE_ATTRIBUTE_DIRECTORY, "DIRECTORY"),
+                                (SMB2.FILE_ATTRIBUTE_ARCHIVE, "ARCHIVE"),
+                                (SMB2.FILE_ATTRIBUTE_NORMAL, "NORMAL"),
+                                (SMB2.FILE_ATTRIBUTE_TEMPORARY, "TEMPORARY"),
+                                (SMB2.FILE_ATTRIBUTE_SPARSE_FILE, "SPARSE_FILE"),
+                                (SMB2.FILE_ATTRIBUTE_REPARSE_POINT, "REPARSE_POINT"),
+                                (SMB2.FILE_ATTRIBUTE_COMPRESSED, "COMPRESSED"),
+                                (SMB2.FILE_ATTRIBUTE_OFFLINE, "OFFLINE"),
+                                (SMB2.FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, "NOT_CONTENT_INDEXED"),
+                                (SMB2.FILE_ATTRIBUTE_ENCRYPTED, "ENCRYPTED"),
+                                (SMB2.FILE_ATTRIBUTE_INTEGRITY_STREAM, "INTEGRITY_STREAM"),
+                                (SMB2.FILE_ATTRIBUTE_NO_SCRUB_DATA, "NO_SCRUB_DATA"),
+                            )
+                        if attrbit[0] & info.basic.file_attributes != 0
+                      ),
+                "ctime" : fmt_time(info.basic.creation_time),
+                "ctime_µs" : info.basic.creation_time.tv_usec,
+                "atime" : fmt_time(info.basic.last_access_time),
+                "atime_µs" : info.basic.last_access_time.tv_usec,
+                "mtime" : fmt_time(info.basic.change_time),
+                "mtime_µs" : info.basic.change_time.tv_usec,
+                "wtime" : fmt_time(info.basic.last_write_time),
+                "wtime_µs" : info.basic.last_write_time.tv_usec,
+                "allocsize" : info.standard.allocation_size,
+                "eofsize" : info.standard.end_of_file,
+                "delet" : fmt_bool(info.standard.delete_pending),
+                "dir" : fmt_bool(info.standard.directory),
+                "easize" : info.ea_size,
+                "access" : ", ".join
+                  (
+                    flagdef[1]
+                    for flagdef in
+                        (
+                            (
+                                ( # file
+                                    (SMB2.FILE_READ_DATA, "READ_DATA"),
+                                    (SMB2.FILE_WRITE_DATA, "WRITE_DATA"),
+                                    (SMB2.FILE_APPEND_DATA, "APPEND_DATA"),
+                                    (SMB2.FILE_EXECUTE, "EXECUTE"),
+                                ),
+                                ( # directory
+                                    (SMB2.FILE_LIST_DIRECTORY, "LIST_DIRECTORY"),
+                                    (SMB2.FILE_ADD_FILE, "ADD_FILE"),
+                                    (SMB2.FILE_ADD_SUBDIRECTORY, "ADD_SUBDIRECTORY"),
+                                    (SMB2.FILE_TRAVERSE, "TRAVERSE"),
+                                ),
+                            )[info.standard.directory]
+                        +
+                            ( # both
+                                (SMB2.FILE_READ_EA, "READ_EA"),
+                                (SMB2.FILE_WRITE_EA, "WRITE_EA"),
+                                (SMB2.FILE_READ_ATTRIBUTES, "READ_ATTRIBUTES"),
+                                (SMB2.FILE_WRITE_ATTRIBUTES, "WRITE_ATTRIBUTES"),
+                                (SMB2.FILE_DELETE_CHILD, "DELETE_CHILD"),
+                                (SMB2.DELETE, "DELETE"),
+                                (SMB2.READ_CONTROL, "READ_CONTROL"),
+                                (SMB2.WRITE_DACL, "WRITE_DACL"),
+                                (SMB2.WRITE_OWNER, "WRITE_OWNER"),
+                                (SMB2.SYNCHRONIZE, "SYNCHRONIZE"),
+                                (SMB2.ACCESS_SYSTEM_SECURITY, "ACCESS_SYSTEM_SECURITY"),
+                                (SMB2.MAXIMUM_ALLOWED, "MAXIMUM_ALLOWED"),
+                                (SMB2.GENERIC_ALL, "GENERIC_ALL"),
+                                (SMB2.GENERIC_EXECUTE, "GENERIC_EXECUTE"),
+                                (SMB2.GENERIC_WRITE, "GENERIC_WRITE"),
+                                (SMB2.GENERIC_READ, "GENERIC_READ"),
+                            )
+                        )
+                    if flagdef[0] & info.access_flags != 0
+                  ),
+                "byteoffset" : info.current_byte_offset,
+                "mode" : ", ".join
+                  (
+                    flagdef[1]
+                    for flagdef in
+                        (
+                            (SMB2.FILE_WRITE_THROUGH, "WRITE_THROUGH"),
+                            (SMB2.FILE_SEQUENTIAL_ONLY, "SEQUENTIAL_ONLY"),
+                            (SMB2.FILE_NO_INTERMEDIATE_BUFFERING, "NO_INTERMEDIATE_BUFFERING"),
+                            (SMB2.FILE_SYNCHRONOUS_IO_ALERT, "SYNCHRONOUS_IO_ALERT"),
+                            (SMB2.FILE_SYNCHRONOUS_IO_NONALERT, "SYNCHRONOUS_IO_NONALERT"),
+                            (SMB2.FILE_DELETE_ON_CLOSE, "DELETE_ON_CLOSE"),
+                        )
+                    if flagdef[0] & info.access_flags != 0
+                  ),
+                "align" : info.alignment_requirement,
+            }
+      )
+    await ctx.disconnect_share_async()
+#end mainline
+
+loop.run_until_complete(mainline())
