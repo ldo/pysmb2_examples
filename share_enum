@@ -1,0 +1,74 @@
+#!/usr/bin/python3
+#+
+# Example use of pysmb2. This one is based on the based on smb2-share-enum.c
+# example in the libsmb2 source tree.
+#
+# Copyright 2020 by Lawrence D'Oliveiro <ldo@geek-central.gen.nz>. This
+# script is licensed CC0
+# <https://creativecommons.org/publicdomain/zero/1.0/>; do with it
+# what you will.
+#-
+
+import sys
+import asyncio
+import getopt
+import smb2
+from smb2 import \
+    SMB2
+
+opts, args = getopt.getopt \
+  (
+    sys.argv[1:],
+    "",
+    []
+  )
+if len(args) != 1 :
+    raise getopt.GetoptError("need exactly one arg, the URL to do a listing of")
+#end if
+
+loop = asyncio.get_event_loop()
+
+async def mainline() :
+    ctx = smb2.Context.create() \
+        .attach_asyncio(loop) \
+        .set_security_mode(SMB2.NEGOTIATE_SIGNING_ENABLED)
+    url = ctx.parse_url(args[0])
+    await ctx.connect_share_async(server = url.server, share = "IPC$", user = url.user)
+    reply = await ctx.share_enum_async()
+    info = reply["ctr"]["array"]
+    sys.stdout.write("Number of shares: %d\n" % len(info))
+    maxnamelen = max(len(e["name"]) for e in info)
+    maxcommentlen = max(len(e["comment"]) for e in info)
+    for entry in info :
+        sys.stdout.write \
+          (
+                "%%-%ds  %%-%ds  %%-8s  %%s\n"
+            %
+                (maxnamelen, maxcommentlen)
+            %
+                (
+                    entry["name"],
+                    entry["comment"],
+                    (
+                        "DISKTREE", # SMB2.SHARE_TYPE_DISKTREE,
+                        "PRINTQ", # SMB2.SHARE_TYPE_PRINTQ,
+                        "DEVICE", # SMB2.SHARE_TYPE_DEVICE,
+                        "IPC", # SMB2.SHARE_TYPE_IPC,
+                    )[entry["type"] & 3],
+                    ",".join
+                      (
+                        flagdef[1]
+                        for flagdef in
+                            (
+                                (SMB2.SHARE_TYPE_TEMPORARY, "TEMPORARY"),
+                                (SMB2.SHARE_TYPE_HIDDEN, "HIDDEN"),
+                            )
+                        if flagdef[0] & entry["type"] != 0
+                      )
+                )
+          )
+    #end for
+    await ctx.disconnect_share_async()
+#end mainline
+
+loop.run_until_complete(mainline())
