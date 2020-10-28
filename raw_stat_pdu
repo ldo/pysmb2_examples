@@ -64,7 +64,8 @@ async def mainline() :
             additional_information = 0,
             flags = 0,
             file_id = smb2.compound_file_id,
-          )
+          ),
+        smb2.FileAllInfo
       )
     pdu.add_compound(req_pdu)
     pdu.add_compound \
@@ -79,8 +80,7 @@ async def mainline() :
           )
       )
     pdu.queue()
-    reply = await req_pdu
-    info = smb2.FileAllInfo.from_ct_ptr(ctx, smb2.ct.cast(reply, smb2.ct.POINTER(SMB2.file_all_info)))
+    info = await req_pdu
     fmt_time = lambda t : time.strftime("%Y-%b-%d %H:%M:%S", time.localtime(t.tv_sec))
     fmt_bool = lambda b : ("N", "Y")[b]
     sys.stdout.write \

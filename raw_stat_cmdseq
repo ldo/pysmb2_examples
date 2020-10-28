@@ -69,7 +69,8 @@ async def mainline() :
                     additional_information = 0,
                     flags = 0,
                     file_id = smb2.compound_file_id,
-                  )
+                  ),
+                smb2.FileAllInfo
               )
             .cmd_close_async
               (
@@ -82,8 +83,7 @@ async def mainline() :
               )
             .queue()
         )
-    reply = await seq["info"]
-    info = smb2.FileAllInfo.from_ct_ptr(ctx, smb2.ct.cast(reply, smb2.ct.POINTER(SMB2.file_all_info)))
+    info = await seq["info"]
     fmt_time = lambda t : time.strftime("%Y-%b-%d %H:%M:%S", time.localtime(t.tv_sec))
     fmt_bool = lambda b : ("N", "Y")[b]
     sys.stdout.write \
