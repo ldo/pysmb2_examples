@@ -1,0 +1,7 @@
+Here are some examples of the use of `pysmb2` ([GitLab](https://gitlab.com/ldo/pysmb2),
+[GitHub](https://github.com/ldo/pysmb2)), my Python binding for the `libsmb2` SMB
+client library. These are mostly based on the examples included in the `libsmb2`
+source code.
+
+Lawrence D'Oliveiro <ldo@geek-central.gen.nz>
+2020 October 28
