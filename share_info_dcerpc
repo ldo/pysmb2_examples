@@ -1,0 +1,76 @@
+#!/usr/bin/python3
+#+
+# Example use of pysmb2. This one is based on the smb2-share-info.c
+# example in the libsmb2 source tree.
+#
+# Copyright 2020 by Lawrence D'Oliveiro <ldo@geek-central.gen.nz>. This
+# script is licensed CC0
+# <https://creativecommons.org/publicdomain/zero/1.0/>; do with it
+# what you will.
+#-
+
+import sys
+import asyncio
+import getopt
+import smb2
+from smb2 import \
+    SMB2
+
+opts, args = getopt.getopt \
+  (
+    sys.argv[1:],
+    "",
+    []
+  )
+if len(args) != 1 :
+    raise getopt.GetoptError("need exactly one arg, the URL of the share")
+#end if
+
+loop = asyncio.get_event_loop()
+
+async def mainline() :
+    ctx = smb2.Context.create() \
+        .attach_asyncio(loop) \
+        .set_security_mode(SMB2.NEGOTIATE_SIGNING_ENABLED)
+    url = ctx.parse_url(args[0])
+    await ctx.connect_share_async(server = url.server, share = "IPC$", user = url.user)
+    dce = ctx.create_dcerpc()
+    await dce.connect_context_async("srvsvc", smb2.srvsvc_interface)
+    c_server = url.server.encode()
+    c_share = url.share.encode()
+    req = SMB2.srvsvc_netsharegetinfo_req \
+      (
+        server = c_server,
+        share = c_share,
+        level = 1
+      )
+    info = await dce.get_info_async(req)
+    sys.stdout.write \
+      (
+            "%-20s  %-20s  %-8s  %s\n"
+        %
+            (
+                info["name"],
+                info["comment"],
+                (
+                    "DISKTREE", # SMB2.SHARE_TYPE_DISKTREE,
+                    "PRINTQ", # SMB2.SHARE_TYPE_PRINTQ,
+                    "DEVICE", # SMB2.SHARE_TYPE_DEVICE,
+                    "IPC", # SMB2.SHARE_TYPE_IPC,
+                )[info["type"] & 3],
+                ",".join
+                  (
+                    flagdef[1]
+                    for flagdef in
+                        (
+                            (SMB2.SHARE_TYPE_TEMPORARY, "TEMPORARY"),
+                            (SMB2.SHARE_TYPE_HIDDEN, "HIDDEN"),
+                        )
+                    if flagdef[0] & info["type"] != 0
+                  )
+            )
+      )
+    await ctx.disconnect_share_async()
+#end mainline
+
+loop.run_until_complete(mainline())
