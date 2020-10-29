@@ -1,0 +1,231 @@
+#!/usr/bin/python3
+#+
+# Example use of pysmb2. This one is based on the smb2-raw-fsstat-async.c
+# example in the libsmb2 source tree.
+#
+# Copyright 2020 by Lawrence D'Oliveiro <ldo@geek-central.gen.nz>. This
+# script is licensed CC0
+# <https://creativecommons.org/publicdomain/zero/1.0/>; do with it
+# what you will.
+#-
+
+import sys
+import os
+from weakref import \
+    ref as weak_ref
+import ctypes as ct
+import asyncio
+import getopt
+import smb2
+from smb2 import \
+    SMB2
+
+def format_fssize_info(out, info) :
+    out.write \
+      (
+            "total_alloc: %(total_alloc)d\n"
+            "avail_alloc: %(avail_alloc)d\n"
+            "au_sectors:  %(sectors_per)d\n"
+            "bytes_per:   %(bytes_per)d\n"
+        %
+            {
+                "total_alloc" : info.total_allocation_units,
+                "avail_alloc" : info.available_allocation_units,
+                "sectors_per" : info.sectors_per_allocation_unit,
+                "bytes_per" : info.bytes_per_sector,
+            }
+      )
+#end format_fssize_info
+
+def format_fsdevice_info(out, info) :
+    out.write \
+      (
+            "devtype: %(devtype)s\n"
+            "charac:  %(charac)s\n"
+        %
+            {
+                "devtype" :
+                    {
+                        SMB2.DEVICE_CD_ROM : "CD_ROM",
+                        SMB2.DEVICE_DISK : "DISK",
+                    }.get(info.device_type, "?"),
+                "charac" : ", ".join
+                  (
+                    flagdef[1]
+                    for flagdef in
+                        (
+                            (SMB2.REMOVABLE_MEDIA, "REMOVABLE_MEDIA"),
+                            (SMB2.READ_ONLY_DEVICE, "READ_ONLY_DEVICE"),
+                            (SMB2.FLOPPY_DISKETTE, "FLOPPY_DISKETTE"),
+                            (SMB2.WRITE_ONCE_MEDIA, "WRITE_ONCE_MEDIA"),
+                            (SMB2.REMOTE_DEVICE, "REMOTE_DEVICE"),
+                            (SMB2.DEVICE_IS_MOUNTED, "DEVICE_IS_MOUNTED"),
+                            (SMB2.VIRTUAL_VOLUME, "VIRTUAL_VOLUME"),
+                            (SMB2.DEVICE_SECURE_OPEN, "DEVICE_SECURE_OPEN"),
+                            (SMB2.CHARACTERISTIC_TS_DEVICE, "CHARACTERISTIC_TS_DEVICE"),
+                            (SMB2.CHARACTERISTIC_WEBDAV_DEVICE, "CHARACTERISTIC_WEBDAV_DEVICE"),
+                            (SMB2.DEVICE_ALLOW_APPCONTAINER_TRAVERSAL, "DEVICE_ALLOW_APPCONTAINER_TRAVERSAL"),
+                            (SMB2.PORTABLE_DEVICE, "PORTABLE_DEVICE"),
+                        )
+                    if info.characteristics & flagdef[0] != 0
+                  )
+            }
+      )
+#end format_fsdevice_info
+
+def format_fscontrol_info(out, info) :
+    out.write \
+      (
+            "freespace_start_filtering: %(fsstart)d\n"
+            "freespace_threshold:       %(fsthresh)d\n"
+            "freespace_stop_filtering:  %(fsstop)d\n"
+            "default_quota_threshold:   %(defquota_thresh)d\n"
+            "default_quota_limit:       %(defquota_limit)d\n"
+            "characteristics:           %(charac)#0.8x\n"
+        %
+            {
+                "fsstart" : info.free_space_start_filtering,
+                "fsthresh" : info.free_space_threshold,
+                "fsstop" : info.free_space_stop_filtering,
+                "defquota_thresh" : info.default_quota_threshold,
+                "defquota_limit" : info.default_quota_limit,
+                "charac" : info.file_system_control_flags,
+            }
+      )
+#end format_fscontrol_info
+
+def format_fsfullsize_info(out, info) :
+    out.write \
+      (
+            "total_alloc:        %(total_alloc)d\n"
+            "caller_avail_alloc: %(caller_avail_alloc)d\n"
+            "actual_avail_alloc: %(actual_avail_alloc)d\n"
+            "sectors_per_au:     %(sectors_per_au)d\n"
+            "bytes_per_sector:   %(bytes_per_sector)d\n"
+        %
+            {
+                "total_alloc" : info.total_allocation_units,
+                "caller_avail_alloc" : info.caller_available_allocation_units,
+                "actual_avail_alloc" : info.actual_available_allocation_units,
+                "sectors_per_au" : info.sectors_per_allocation_unit,
+                "bytes_per_sector" : info.bytes_per_sector,
+            }
+      )
+#end format_fsfullsize_info
+
+info_types = \
+    {
+        "size" :
+            {
+                "code" : SMB2.FILE_FS_SIZE_INFORMATION,
+                "type" : smb2.FileFSSizeInfo,
+                "format" : format_fssize_info,
+            },
+        "device" :
+            {
+                "code" : SMB2.FILE_FS_DEVICE_INFORMATION,
+                "type" : smb2.FileFSDeviceInfo,
+                "format" : format_fsdevice_info,
+            },
+        "control" :
+            {
+                "code" : SMB2.FILE_FS_CONTROL_INFORMATION,
+                "type" : smb2.FileFSControlInfo,
+                "format" : format_fscontrol_info,
+            },
+        "full_size" :
+            {
+                "code" : SMB2.FILE_FS_FULL_SIZE_INFORMATION,
+                "type" : smb2.FileFSFullSizeInfo,
+                "format" : format_fsfullsize_info,
+            },
+    }
+
+info_level = None
+opts, args = getopt.getopt \
+  (
+    sys.argv[1:],
+    "",
+    ["level="]
+  )
+for keyword, value in opts :
+    if keyword == "--level" :
+        if value in info_types :
+            info_level = info_types[value]
+        else :
+            raise getopt.GetoptError \
+              (
+                    "unrecognized --level value %s -- must be one of %s"
+                %
+                    (repr(value), ", ".join(sorted(info_types.keys())))
+              )
+        #end if
+    #end if
+#end for
+if info_level == None :
+    raise getopt.GetoptError("forgot to specify --level of info to retrieve")
+#end if
+if len(args) != 1 :
+    raise getopt.GetoptError("need exactly one arg, the URL of the file to stat")
+#end if
+
+loop = asyncio.get_event_loop()
+
+async def mainline() :
+    ctx = smb2.Context.create() \
+        .set_security_mode(SMB2.NEGOTIATE_SIGNING_ENABLED) \
+        .attach_asyncio(loop)
+    url = ctx.parse_url(args[0])
+    await ctx.connect_share_async(url.server, url.share, url.user)
+    if url.path != None :
+        path = url.path.encode()
+    else :
+        path = None
+    #end if
+    seq = \
+        (ctx.new_cmd_seq()
+            .cmd_create_async
+              (
+                "create",
+                SMB2.create_request
+                  (
+                    requested_oplock_level = SMB2.OPLOCK_LEVEL_NONE,
+                    impersonation_level = SMB2.IMPERSONATION_IMPERSONATION,
+                    desired_access = SMB2.FILE_READ_ATTRIBUTES | SMB2.FILE_READ_EA,
+                    file_attributes = 0,
+                    share_access = SMB2.FILE_SHARE_READ | SMB2.FILE_SHARE_WRITE,
+                    create_disposition = SMB2.FILE_OPEN,
+                    create_options = 0,
+                    name = path,
+                  )
+              )
+            .cmd_query_info_async
+              (
+                "info",
+                SMB2.query_info_request
+                  (
+                    info_type = SMB2.s0_INFO_FILESYSTEM,
+                    file_info_class = info_level["code"],
+                    output_buffer_length = 65535,
+                    additional_information = 0,
+                    flags = 0,
+                  ),
+                info_level["type"]
+              )
+            .cmd_close_async
+              (
+                "close",
+                SMB2.close_request
+                  (
+                    flags = SMB2.CLOSE_FLAG_POSTQUERY_ATTRIB,
+                    file_id = smb2.compound_file_id,
+                  )
+              )
+            .queue()
+        )
+    info = await seq["info"]
+    info_level["format"](sys.stdout, info)
+    await ctx.disconnect_share_async()
+#end mainline
+
+loop.run_until_complete(mainline())
